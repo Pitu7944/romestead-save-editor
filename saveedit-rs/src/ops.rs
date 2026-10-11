@@ -131,8 +131,16 @@ fn guid() -> Vec<u8> {
 
 /// Build a full ItemInstanceModel element as the game would serialize it:
 /// [asmId][typeId][0x20][num][total][fields in declaration order]:
-/// BaseDataId, Id, InventoryId, Auras (always, even empty), StackCount.
-pub fn item_element(sf: &SaveData, kb: &mut KeyBuilder, base_id: &str, count: u32) -> Vec<u8> {
+/// BaseDataId, Id, InventoryId, Auras (always, even empty), StackCount and —
+/// when the item is usable — `UsableInfo { UsesLeft }` exactly like
+/// `ItemInstanceModel.CalculateStats` produces it.
+pub fn item_element(
+    sf: &SaveData,
+    kb: &mut KeyBuilder,
+    base_id: &str,
+    count: u32,
+    uses_left: Option<u32>,
+) -> Vec<u8> {
     let asm = kb.ensure(sf, "Shared");
     let ty = kb.ensure(sf, "Shared.Models.Items.ItemInstanceModel");
     let f_base = kb.ensure(sf, "BaseDataId");
@@ -143,6 +151,8 @@ pub fn item_element(sf: &SaveData, kb: &mut KeyBuilder, base_id: &str, count: u3
     let t_guid = kb.ensure(sf, "System.Guid");
     let f_auras = kb.ensure(sf, "Auras");
     let f_stack = kb.ensure(sf, "StackCount");
+    let f_usable = uses_left.map(|_| kb.ensure(sf, "UsableInfo"));
+    let f_uses = uses_left.map(|_| kb.ensure(sf, "UsesLeft"));
 
     let g = guid();
 
@@ -183,10 +193,37 @@ pub fn item_element(sf: &SaveData, kb: &mut KeyBuilder, base_id: &str, count: u3
     entries.extend(auras);
     entries.extend(stack);
 
+    let mut usable = None;
+    if let Some(uses) = uses_left {
+        // UsableItemInstance: only UsesLeft is non-default when 0 -> empty object
+        if uses > 0 {
+            let mut entry = vec![TC_INT32];
+            entry.extend(write7(f_uses.unwrap() as u64));
+            entry.extend(write7(4));
+            entry.extend(put_u32(uses));
+            let mut body = write7(1); // num fields
+            body.extend(write7(entry.len() as u64)); // total len
+            body.extend(entry);
+            let mut info = vec![TC_COMPACT_OBJECT];
+            info.extend(write7(f_usable.unwrap() as u64));
+            info.extend(write7(body.len() as u64));
+            info.extend(body);
+            usable = Some(info);
+        } else {
+            // all-default UsableItemInstance: object with zero entries
+            let mut info = vec![TC_COMPACT_OBJECT];
+            info.extend(write7(f_usable.unwrap() as u64));
+            info.extend(write7(2));
+            info.extend([0u8, 0u8]);
+            usable = Some(info);
+        }
+        entries.extend(usable.unwrap());
+    }
+
     let mut elem = write7(asm as u64);
     elem.extend(write7(ty as u64));
     elem.push(TC_COMPACT_OBJECT);
-    elem.extend(write7(5));
+    elem.extend(write7(5 + if uses_left.is_some() { 1 } else { 0 }));
     elem.extend(write7(entries.len() as u64));
     elem.extend(entries);
     elem
@@ -211,8 +248,11 @@ pub fn build_give(sf: &SaveData, spec: &ItemSpec) -> Result<Built> {
         },
     };
 
+    // usable items get UsableInfo just like the game's CalculateStats would
+    let uses_left = items_db::get(&spec.id).and_then(items_db::uses_left);
+
     let mut kb = KeyBuilder::new();
-    let elem = item_element(sf, &mut kb, &spec.id, spec.count);
+    let elem = item_element(sf, &mut kb, &spec.id, spec.count, uses_left);
     let mut edits = kb.finalize(sf);
 
     // replace the 2-byte null marker (array count itself stays unchanged)
@@ -597,6 +637,10 @@ pub fn verify(patched: &[u8], expects: &Wants) -> Result<()> {
             let info = slot_info(&sf, el).context("slot empty after patch")?;
             ensure!(info.base_name == spec.id, "item id wrong after patch");
             ensure!(info.count == spec.count, "stack count wrong after patch");
+            let expect_usable = items_db::get(&spec.id).and_then(items_db::uses_left).is_some();
+            if expect_usable && !info.has_usable {
+                bail!("UsableInfo missing after patch");
+            }
         }
         Wants::Remove(target, slot) => {
             let e = sf_find_target(&sf, target)?;
@@ -630,4 +674,59 @@ pub fn verify(patched: &[u8], expects: &Wants) -> Result<()> {
 
 fn sf_find_target<'a>(sf: &'a SaveData, target: &str) -> Result<&'a Entry> {
     sf.find(&sf.root, target).context(format!("{} missing after patch", target))
+}
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::ops::Wants;
+
+    /// Every UsableInfo entry in a real save has the shape our give-path
+    /// synthesizes: a direct CompactObject containing UsesLeft (Int32).
+    #[test]
+    fn real_usable_info_layout_matches_give_synthesis() {
+        let data = std::fs::read("../Adolfina.char").unwrap();
+        let sf = parse_file(data).unwrap();
+        let mut found = 0;
+        for t in ["Inventory", "Equipment", "SecondaryEquipment"] {
+            let Some(e) = sf.find(&sf.root, t) else { continue };
+            let arr = parse_array_data(&sf, e).unwrap();
+            for el in arr.elems.iter() {
+                if el.is_null {
+                    continue;
+                }
+                let obj = sf.sub(&el.entry).unwrap();
+                if let Some(u) = sf.find(&obj, "UsableInfo") {
+                    found += 1;
+                    assert_eq!(u.tc, TC_COMPACT_OBJECT, "UsableInfo is a plain object");
+                    let sub = sf.sub(u).unwrap();
+                    let uses = sf
+                        .find(&sub, "UsesLeft")
+                        .expect("UsableInfo must carry UsesLeft");
+                    assert_eq!(uses.tc, TC_INT32);
+                    assert_eq!(uses.plen, 4);
+                    assert!(read_u32(&sf.data, uses.pstart) > 0);
+                }
+            }
+        }
+        assert!(found > 0, "the test save should contain usable items");
+    }
+
+    /// Gifted consumables must come out usable: same field the game writes.
+    #[test]
+    fn gifted_food_has_usable_info() {
+        let data = std::fs::read("../Marcella.char").unwrap();
+        let sf = parse_file(data).unwrap();
+        let built = crate::ops::build_give(
+            &sf,
+            &crate::ops::ItemSpec {
+                target: "Inventory",
+                id: "food:crab_meat".into(),
+                count: 10,
+                slot: None,
+            },
+        )
+        .unwrap();
+        let patched = crate::format::apply_edits(sf.data.clone(), built.edits.clone());
+        verify(&patched, &built.verify).expect("gifted food must be usable");
+    }
 }

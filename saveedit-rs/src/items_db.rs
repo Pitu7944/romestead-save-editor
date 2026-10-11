@@ -83,6 +83,23 @@ pub fn dmg_ranges(d: &ItemDef) -> Option<Vec<String>> {
     }
 }
 
+/// Charges the game would give this item on pickup
+/// (`ItemInstanceModel.CalculateStats`: UsesLeft = UsesMax when UsesMax > 0).
+/// None = item is not usable in-game. Foods (`Food(...)`, UsesMax=1) count as 1.
+pub fn uses_left(d: &ItemDef) -> Option<u32> {
+    use serde_json::Value as V;
+    let u = d.usable.as_ref()?;
+    match u {
+        V::Object(o) if o.get("__ctor").is_some() => Some(1),
+        V::Object(o) => match o.get("UsesMax").and_then(|x| x.as_u64()) {
+            Some(n) if n > 0 => Some(n as u32),
+            Some(_) => Some(0), // usable exists, zero charges -> empty UsableInfo
+            None => None,
+        },
+        _ => None,
+    }
+}
+
 /// One-line human summary of an item's stats (weapon damage, bonuses, price...).
 pub fn describe(d: &ItemDef) -> String {
     use serde_json::Value as V;

@@ -270,16 +270,15 @@ Because inventory is a fixed 36-slot array in the save. `give` only ever uses *e
 so your existing items are never touched.
 
 **Can consumables be made usable?**
-Not yet — gifted consumables lack the `UsableInfo` sub-object the game normally writes, so
-stacking/selling/equipping works but drinking doesn't. Existing items are unaffected.
+Yes. When gifting, the tool synthesizes the `UsableInfo` sub-object the game derives at pickup
+(from `ItemInstanceModel.CalculateStats`) — so gifted food and drinks are fully consumable, not
+just stackable/sellable.
 
 **Does it work on saves from a different game version?**
 It refuses (with a clear error) rather than guessing: any container whose length encoding
 width would change aborts the edit. Older/newer versions may need format updates — PRs welcome.
 
 ## Screenshots
-
-Drop captures as `docs/screenshots/*.png` (paths as written below) — the repo renders them here.
 
 | | |
 |---|---|
@@ -292,8 +291,6 @@ Drop captures as `docs/screenshots/*.png` (paths as written below) — the repo 
 | ![cli db](docs/screenshots/cli-db.png) | `saveedit db pickaxe` |
 | ![cli items](docs/screenshots/cli-items.png) | `saveedit items` with rarity colors |
 | ![cli give-file](docs/screenshots/cli-givefile.png) | `saveedit give-file` applying a manifest |
-
-*(screenshots to be captured — see the shot list below)*
 
 ## License
 
