@@ -68,6 +68,14 @@ Patches bytes directly in the `CandideSerializer` format — no save *re-writing
 
 ## Quick start
 
+Prebuilt Windows binary: [releases/latest](https://github.com/Pitu7944/romestead-save-editor/releases/latest/download/saveedit.exe) (or the full [zip](https://github.com/Pitu7944/romestead-save-editor/releases/latest/download/saveedit-v0.1.0-win64.zip)) — run it, no install needed:
+
+```sh
+saveedit.exe tui .
+```
+
+Build from source instead:
+
 ```sh
 git clone https://github.com/Pitu7944/romestead-save-editor
 cd romestead-save-editor/saveedit-rs
