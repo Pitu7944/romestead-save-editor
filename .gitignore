@@ -1,0 +1,10 @@
+# personal saves and their backups — never in a public repo
+*.char
+*.bak
+
+# build artifacts
+saveedit-rs/target/
+__pycache__/
+
+# tool state (favorites/recents, per folder)
+.saveedit_recents.json
